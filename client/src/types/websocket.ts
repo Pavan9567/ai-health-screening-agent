@@ -1,6 +1,7 @@
 export type ClientMessageType =
   | "START_CALL"
   | "END_CALL"
+  | "AUDIO_CHUNK"
   | "PING";
 
 export type ServerMessageType =

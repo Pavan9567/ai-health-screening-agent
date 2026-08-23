@@ -49,7 +49,18 @@ export function initializeCallSocket(
       message: "WebSocket connection established.",
     });
 
-    socket.on("message", (rawMessage) => {
+    socket.on("message", (rawMessage, isBinary) => {
+      if (isBinary) {
+        const audioBuffer = Buffer.isBuffer(rawMessage)
+            ? rawMessage
+            : Buffer.from(rawMessage as ArrayBuffer);
+
+        console.log(
+            `🎙️ Received audio chunk: ${audioBuffer.byteLength} bytes`,
+        );
+
+        return;
+      }
       try {
         const message = JSON.parse(
           rawMessage.toString(),

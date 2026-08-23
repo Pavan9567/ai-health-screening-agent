@@ -61,6 +61,27 @@ export class CallWebSocket {
     this.socket.send(JSON.stringify(message));
   }
 
+  sendAudio(chunk: Blob): void {
+    if (!this.socket) {
+        console.warn(
+        "WebSocket is not connected.",
+        );
+        return;
+    }
+
+    if (
+        this.socket.readyState !==
+        WebSocket.OPEN
+    ) {
+        console.warn(
+        "WebSocket is not ready.",
+        );
+        return;
+    }
+
+    this.socket.send(chunk);
+  }
+
   disconnect(): void {
     this.socket?.close();
     this.socket = null;
@@ -69,4 +90,5 @@ export class CallWebSocket {
   get readyState(): number | undefined {
     return this.socket?.readyState;
   }
+
 }

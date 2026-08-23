@@ -35,6 +35,13 @@ export function useWebSocket() {
     [],
   );
 
+  const sendAudio = useCallback(
+    (chunk: Blob) => {
+        clientRef.current?.sendAudio(chunk);
+    },
+    [],
+  );
+
   const disconnect = useCallback(() => {
     clientRef.current?.disconnect();
     clientRef.current = null;
@@ -43,6 +50,7 @@ export function useWebSocket() {
   return {
     connect,
     send,
+    sendAudio,
     disconnect,
   };
 }

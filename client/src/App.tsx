@@ -9,6 +9,7 @@ function App() {
   const {
     status,
     messages,
+    audioStatus,
     startCall,
     endCall,
   } = useVoiceCall();
@@ -54,6 +55,7 @@ function App() {
         <div className="main-content">
           <CallScreen
             status={status}
+            audioStatus={audioStatus}
             onStartCall={startCall}
             onEndCall={endCall}
           />

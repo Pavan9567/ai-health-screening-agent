@@ -3,12 +3,14 @@ import type { CallStatus } from "../types/call";
 
 interface CallScreenProps {
   status: CallStatus;
+  audioStatus: string;
   onStartCall: () => void;
   onEndCall: () => void;
 }
 
 function CallScreen({
   status,
+  audioStatus,
   onStartCall,
   onEndCall,
 }: CallScreenProps) {
@@ -66,6 +68,22 @@ function CallScreen({
                   ? "We're processing your response."
                   : "Your health screening information has been collected."}
         </p>
+
+        {isActive && (
+         <div className="microphone-status">
+            <span
+            className={`microphone-dot ${
+                audioStatus === "recording"
+                ? "microphone-dot-active"
+                : ""
+            }`}
+            />
+
+            {audioStatus === "recording"
+            ? "Microphone active"
+            : "Starting microphone..."}
+         </div>
+        )}
 
         {!isActive && status !== "ended" && (
           <button

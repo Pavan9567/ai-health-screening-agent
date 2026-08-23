@@ -1,103 +1,144 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, } from "react";
 import { useWebSocket } from "./useWebSocket";
-import type {
-  CallStatus,
-  TranscriptMessage,
-} from "../types/call";
-import type { ServerMessage } from "../types/websocket";
+import { useAudioRecorder } from "./useAudioRecorder";
+import type { CallStatus, TranscriptMessage, } from "../types/call";
+import type { ServerMessage, } from "../types/websocket";
 
-const WS_URL =
-  import.meta.env.VITE_WS_URL ??
-  "ws://localhost:4000/ws/call";
+const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:4000/ws/call";
 
 export function useVoiceCall() {
-  const [status, setStatus] =
-    useState<CallStatus>("idle");
-
+  const [status, setStatus] = useState<CallStatus>("idle");
   const [messages] = useState<TranscriptMessage[]>([]);
+  const [callId, setCallId] = useState<string | null>(null);
+  const { connect, send, sendAudio, disconnect, } = useWebSocket();
 
-  const [callId, setCallId] =
-    useState<string | null>(null);
+  const {
+    status: audioStatus,
+    error: audioError,
+    startRecording,
+    stopRecording,
+  } = useAudioRecorder({
+    onAudioChunk: sendAudio,
+  });
 
-  const { connect, send, disconnect } =
-    useWebSocket();
+  const handleMessage =
+    useCallback(
+      (message: ServerMessage) => {
+        switch (message.type) {
+          case "CONNECTED":
+            console.log(
+              "WebSocket connected:",
+              message.message,
+            );
+            break;
 
-  const handleMessage = useCallback(
-    (message: ServerMessage) => {
-      switch (message.type) {
-        case "CONNECTED":
+          case "CALL_STARTED":
+            setCallId(
+              message.callId ?? null,
+            );
+
+            setStatus("active");
+
+            void startRecording();
+
+            break;
+
+          case "CALL_ENDED":
+            stopRecording();
+
+            setStatus("ended");
+
+            disconnect();
+
+            break;
+
+          case "ERROR":
+            console.error(
+              "WebSocket error:",
+              message.message,
+            );
+
+            stopRecording();
+            disconnect();
+
+            setStatus("idle");
+
+            break;
+
+          default:
+            break;
+        }
+      },
+      [
+        disconnect,
+        startRecording,
+        stopRecording,
+      ],
+    );
+
+  const startCall =
+    useCallback(() => {
+      setStatus("connecting");
+
+      connect(WS_URL, {
+        onOpen: () => {
+          send({
+            type: "START_CALL",
+          });
+        },
+
+        onMessage:
+          handleMessage,
+
+        onClose: () => {
           console.log(
-            "WebSocket connected:",
-            message.message,
+            "WebSocket connection closed.",
           );
-          break;
 
-        case "CALL_STARTED":
-          setCallId(message.callId ?? null);
-          setStatus("active");
-          break;
+          stopRecording();
+        },
 
-        case "CALL_ENDED":
-          setStatus("ended");
-          disconnect();
-          break;
-
-        case "ERROR":
+        onError: (error) => {
           console.error(
-            "WebSocket error:",
-            message.message,
+            "WebSocket connection error:",
+            error,
           );
+
+          stopRecording();
 
           setStatus("idle");
-          break;
+        },
+      });
+    }, [
+      connect,
+      handleMessage,
+      send,
+      stopRecording,
+    ]);
 
-        default:
-          break;
-      }
-    },
-    [disconnect],
-  );
+  const endCall =
+    useCallback(() => {
+      stopRecording();
 
-  const startCall = useCallback(() => {
-    setStatus("connecting");
-
-    connect(WS_URL, {
-      onOpen: () => {
-        send({
-          type: "START_CALL",
-        });
-      },
-
-      onMessage: handleMessage,
-
-      onClose: () => {
-        console.log(
-          "WebSocket connection closed.",
-        );
-      },
-
-      onError: (error) => {
-        console.error(
-          "WebSocket connection error:",
-          error,
-        );
-
-        setStatus("idle");
-      },
-    });
-  }, [connect, handleMessage, send]);
-
-  const endCall = useCallback(() => {
-    send({
-      type: "END_CALL",
-      callId: callId ?? undefined,
-    });
-  }, [callId, send]);
+      send({
+        type: "END_CALL",
+        callId:
+          callId ?? undefined,
+      });
+    }, [
+      callId,
+      send,
+      stopRecording,
+    ]);
 
   return {
     status,
     messages,
     callId,
+
+    audioStatus,
+    audioError,
+
     startCall,
     endCall,
   };

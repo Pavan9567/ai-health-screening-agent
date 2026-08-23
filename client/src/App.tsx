@@ -9,7 +9,9 @@ function App() {
   const {
     status,
     messages,
+    liveTranscript,
     audioStatus,
+    audioError,
     startCall,
     endCall,
   } = useVoiceCall();
@@ -56,6 +58,7 @@ function App() {
           <CallScreen
             status={status}
             audioStatus={audioStatus}
+            audioError={audioError}
             onStartCall={startCall}
             onEndCall={endCall}
           />
@@ -63,6 +66,7 @@ function App() {
           {status !== "idle" && (
             <ConversationPanel
               messages={messages}
+              liveTranscript={liveTranscript}
             />
           )}
 

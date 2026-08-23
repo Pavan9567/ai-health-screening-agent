@@ -8,6 +8,7 @@ export type ServerMessageType =
   | "CONNECTED"
   | "CALL_STARTED"
   | "CALL_ENDED"
+  | "TRANSCRIPT"
   | "ERROR"
   | "PONG";
 
@@ -20,4 +21,7 @@ export interface ServerMessage {
   type: ServerMessageType;
   callId?: string;
   message?: string;
+
+  transcript?: string;
+  isFinal?: boolean;
 }

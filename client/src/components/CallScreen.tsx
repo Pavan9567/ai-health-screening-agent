@@ -4,6 +4,7 @@ import type { CallStatus } from "../types/call";
 interface CallScreenProps {
   status: CallStatus;
   audioStatus: string;
+  audioError: string | null;
   onStartCall: () => void;
   onEndCall: () => void;
 }
@@ -11,6 +12,7 @@ interface CallScreenProps {
 function CallScreen({
   status,
   audioStatus,
+  audioError,
   onStartCall,
   onEndCall,
 }: CallScreenProps) {
@@ -70,7 +72,13 @@ function CallScreen({
         </p>
 
         {isActive && (
-         <div className="microphone-status">
+         <div
+            className={`microphone-status ${
+            audioStatus === "error"
+                ? "microphone-status-error"
+                : ""
+            }`}
+        >
             <span
             className={`microphone-dot ${
                 audioStatus === "recording"
@@ -79,10 +87,20 @@ function CallScreen({
             }`}
             />
 
+            <span>
             {audioStatus === "recording"
-            ? "Microphone active"
-            : "Starting microphone..."}
+                ? "Microphone active"
+                : audioStatus === "error"
+                ? "Microphone unavailable"
+                : "Starting microphone..."}
+            </span>
          </div>
+        )}
+
+        {audioError && (
+        <p className="microphone-error">
+            {audioError}
+        </p>
         )}
 
         {!isActive && status !== "ended" && (

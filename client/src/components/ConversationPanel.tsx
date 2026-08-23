@@ -3,10 +3,12 @@ import type { TranscriptMessage } from "../types/call";
 
 interface ConversationPanelProps {
   messages: TranscriptMessage[];
+  liveTranscript: string;
 }
 
 function ConversationPanel({
   messages,
+  liveTranscript
 }: ConversationPanelProps) {
   return (
     <section className="conversation-panel">
@@ -41,6 +43,20 @@ function ConversationPanel({
               <p>{message.text}</p>
             </article>
           ))
+        )}
+        {liveTranscript && (
+         <div className="conversation-message user-message interim-message">
+            <div className="message-speaker">
+            You
+            </div>
+
+            <div className="message-text">
+            {liveTranscript}
+            <span className="transcript-cursor">
+                ...
+            </span>
+            </div>
+         </div>
         )}
       </div>
     </section>

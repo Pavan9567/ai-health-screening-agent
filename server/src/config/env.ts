@@ -10,8 +10,17 @@ if (Number.isNaN(port)) {
 
 export const env = {
   port,
-  clientUrl: process.env.CLIENT_URL ?? "http://localhost:5173",
-  geminiApiKey: process.env.GEMINI_API_KEY ?? "",
-  sttApiKey: process.env.STT_API_KEY ?? "",
-  ttsApiKey: process.env.TTS_API_KEY ?? "",
+
+  clientUrl:
+    process.env.CLIENT_URL ??
+    "http://localhost:5173",
+
+  geminiApiKey:
+    process.env.GEMINI_API_KEY ?? "",
+
+  sttApiKey:
+    process.env.STT_API_KEY ?? "",
+
+  ttsApiKey:
+    process.env.TTS_API_KEY ?? "",
 };

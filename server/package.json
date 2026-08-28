@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test:gemini": "tsx src/scripts/testGemini.ts",
+    "test:conversation": "tsx src/scripts/testConversation.ts",
+    "test:screening": "tsx src/scripts/testScreening.ts"
   },
   "keywords": [],
   "author": "",

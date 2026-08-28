@@ -19,3 +19,10 @@ export interface CallState {
   messages: TranscriptMessage[];
   duration: number;
 }
+
+export interface AIMessage {
+  id: string;
+  role: "assistant";
+  text: string;
+  timestamp: number;
+}

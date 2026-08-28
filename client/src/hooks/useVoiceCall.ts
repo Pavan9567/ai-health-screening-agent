@@ -129,6 +129,36 @@ export function useVoiceCall() {
             break;
           }
 
+          // AI RESPONSE
+          case "AI_RESPONSE": {
+            const response =
+                message.response?.trim();
+
+            if (!response) {
+                break;
+            }
+
+            console.log(
+                "🤖 AI response:",
+                response,
+            );
+
+            setMessages(
+                (currentMessages) => [
+                ...currentMessages,
+                {
+                    id: crypto.randomUUID(),
+                    speaker: "assistant",
+                    text: response,
+                    timestamp:
+                    new Date().toISOString(),
+                },
+                ],
+            );
+
+            break;
+          }
+
           // CALL ENDED
           case "CALL_ENDED": {
             stopRecording();

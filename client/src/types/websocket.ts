@@ -9,6 +9,7 @@ export type ServerMessageType =
   | "CALL_STARTED"
   | "CALL_ENDED"
   | "TRANSCRIPT"
+  | "AI_RESPONSE"
   | "ERROR"
   | "PONG";
 
@@ -24,4 +25,11 @@ export interface ServerMessage {
 
   transcript?: string;
   isFinal?: boolean;
+  response?: string;
+}
+
+export interface AI_RESPONSE_MESSAGE {
+  type: "AI_RESPONSE";
+  callId: string;
+  response: string;
 }

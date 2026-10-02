@@ -26,3 +26,16 @@ export interface AIMessage {
   text: string;
   timestamp: number;
 }
+
+export interface HealthScreeningReport {
+  name: string | null;
+  mainConcern: string | null;
+  symptoms: string[];
+  duration: string | null;
+  severity: string | null;
+  relatedSymptoms: string[];
+  followUpFlags: string[];
+  summary: string;
+  completed: boolean;
+  disclaimer: string;
+}

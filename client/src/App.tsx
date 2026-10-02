@@ -1,32 +1,21 @@
 import CallScreen from "./components/CallScreen";
 import ConversationPanel from "./components/ConversationPanel";
-import HealthReport, {
-  type HealthReportData,
-} from "./components/HealthReport";
+import HealthReport from "./components/HealthReport";
 import { useVoiceCall } from "./hooks/useVoiceCall";
 
 function App() {
   const {
     status,
     messages,
+    isThinking,
+    isAiSpeaking,
     liveTranscript,
     audioStatus,
     audioError,
+    screeningReport,
     startCall,
     endCall,
   } = useVoiceCall();
-
-  const report: HealthReportData | null =
-    status === "ended"
-      ? {
-          mainConcern: "Not collected",
-          symptoms: [],
-          duration: "Not collected",
-          severity: "Not collected",
-          followUp:
-            "The call ended before enough information could be collected.",
-        }
-      : null;
 
   return (
     <main className="app">
@@ -66,14 +55,22 @@ function App() {
           {status !== "idle" && (
             <ConversationPanel
               messages={messages}
-              liveTranscript={liveTranscript}
+              liveTranscript={
+                liveTranscript
+              }
+              isThinking={isThinking}
+              isAiSpeaking={
+                isAiSpeaking
+              }
             />
           )}
 
           {status === "ended" &&
-            report && (
+            screeningReport && (
               <HealthReport
-                report={report}
+                report={
+                  screeningReport
+                }
               />
             )}
         </div>

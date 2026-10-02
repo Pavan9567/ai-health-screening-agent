@@ -1,34 +1,15 @@
 import type { Server as HttpServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-
-import {
-  DeepgramSttService,
-} from "../services/stt.service.js";
-
-import {
-  GeminiLlmService,
-} from "../services/llm.service.js";
-
-import {
-  ConversationService,
-} from "../services/conversation.service.js";
-
-import {
-  buildHealthScreeningPrompt,
-} from "../prompts/healthScreening.js";
-
-import {
-  createCallSession,
-  type CallSession,
-} from "../models/callSession.js";
+import { DeepgramSttService, } from "../services/stt.service.js";
+import { GeminiLlmService, } from "../services/llm.service.js";
+import { GeminiTtsService, } from "../services/tts.service.js";
+import { ConversationService, } from "../services/conversation.service.js";
+import { buildHealthScreeningPrompt, } from "../prompts/healthScreening.js";
+import { createCallSession, type CallSession, } from "../models/callSession.js";
+import type { ConversationState, HealthScreeningReport, } from "../models/healthScreening.js";
 
 
-/*
-|--------------------------------------------------------------------------
-| Client WebSocket Messages
-|--------------------------------------------------------------------------
-*/
-
+// Client WebSocket Messages
 interface ClientMessage {
   type:
     | "START_CALL"
@@ -40,12 +21,7 @@ interface ClientMessage {
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Server WebSocket Messages
-|--------------------------------------------------------------------------
-*/
-
+// Server WebSocket Messages
 interface ServerMessage {
   type:
     | "CONNECTED"
@@ -53,6 +29,9 @@ interface ServerMessage {
     | "CALL_ENDED"
     | "TRANSCRIPT"
     | "AI_RESPONSE"
+    | "AUDIO_START"
+    | "AUDIO_END"
+    | "SCREENING_COMPLETE"
     | "ERROR"
     | "PONG";
 
@@ -61,15 +40,11 @@ interface ServerMessage {
   transcript?: string;
   isFinal?: boolean;
   response?: string;
+  report?: HealthScreeningReport;
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Send WebSocket Message
-|--------------------------------------------------------------------------
-*/
-
+// Send WebSocket Message
 function sendMessage(
   socket: WebSocket,
   message: ServerMessage,
@@ -85,12 +60,55 @@ function sendMessage(
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Initialize Call WebSocket
-|--------------------------------------------------------------------------
-*/
+function sendAudio(
+  socket: WebSocket,
+  audioBuffer: Buffer,
+): void {
+  if (
+    socket.readyState ===
+    socket.OPEN
+  ) {
+    socket.send(
+      audioBuffer,
+    );
+  }
+}
 
+function buildHealthScreeningReport(
+  state: ConversationState,
+  summary: string,
+): HealthScreeningReport {
+  return {
+    name: state.health.name,
+
+    mainConcern: state.health.mainConcern,
+
+    symptoms: [
+      ...state.health.symptoms,
+    ],
+
+    duration: state.health.duration,
+
+    severity: state.health.severity,
+
+    relatedSymptoms: [
+      ...state.health.relatedSymptoms,
+    ],
+
+    followUpFlags: [
+      ...state.health.followUpFlags,
+    ],
+
+    summary,
+
+    completed: state.isComplete,
+
+    disclaimer: "This health screening summary is for informational purposes only and is not a medical diagnosis. Please consult a qualified healthcare professional for medical advice, diagnosis, or treatment.",
+  };
+}
+
+
+// Initialize Call WebSocket
 export function initializeCallSocket(
   server: HttpServer,
 ): WebSocketServer {
@@ -101,28 +119,17 @@ export function initializeCallSocket(
     });
 
 
-  /*
-  |--------------------------------------------------------------------------
-  | Services
-  |--------------------------------------------------------------------------
-  */
+  // Services
+  const sttService = new DeepgramSttService();
 
-  const sttService =
-    new DeepgramSttService();
+  const geminiService = new GeminiLlmService();
 
-  const geminiService =
-    new GeminiLlmService();
+  const ttsService = new GeminiTtsService();
 
-  const conversationService =
-    new ConversationService();
+  const conversationService = new ConversationService();
 
 
-  /*
-  |--------------------------------------------------------------------------
-  | WebSocket Connection
-  |--------------------------------------------------------------------------
-  */
-
+  // WebSocket Connection
   wss.on(
     "connection",
     (socket) => {
@@ -131,23 +138,13 @@ export function initializeCallSocket(
       );
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | Per-call state
-      |--------------------------------------------------------------------------
-      */
-
+      // Per-call state
       let session:
         | CallSession
         | null = null;
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | Deepgram connection
-      |--------------------------------------------------------------------------
-      */
-
+      // Deepgram connection
       let sttConnection:
         | Awaited<
             ReturnType<
@@ -157,41 +154,23 @@ export function initializeCallSocket(
         | null = null;
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | Conversation state
-      |--------------------------------------------------------------------------
-      |
-      | Each WebSocket connection gets its own
-      | conversation state.
-      |
-      */
-
+      // Conversation state
       let conversationState =
         conversationService
           .createInitialState();
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | Gemini processing lock
-      |--------------------------------------------------------------------------
-      |
-      | Prevent two FINAL transcripts from triggering
-      | Gemini simultaneously.
-      |
-      */
-
-      let isProcessingTranscript =
-        false;
+      // Conversation turn state
+      type CallTurnState =
+        | "LISTENING"
+        | "PROCESSING"
+        | "AI_SPEAKING";
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | Connected
-      |--------------------------------------------------------------------------
-      */
+      let turnState: CallTurnState = "LISTENING";
 
+
+      // Connected
       sendMessage(
         socket,
         {
@@ -202,189 +181,32 @@ export function initializeCallSocket(
       );
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | WebSocket Messages
-      |--------------------------------------------------------------------------
-      */
+      // Ensure Deepgram connection
+      let sttConnectionPromise:
+        | Promise<Awaited<ReturnType<DeepgramSttService["createLiveConnection"]>>>
+        | null = null;
 
-      socket.on(
-        "message",
-        async (
-          rawMessage,
-          isBinary,
-        ) => {
+      const ensureSttConnection = async () => {
+        if (
+          sttConnection &&
+          sttConnection.socket.readyState ===
+            sttConnection.socket.OPEN
+        ) {
+          return sttConnection;
+        }
 
-          /*
-          |--------------------------------------------------------------------------
-          | BINARY AUDIO MESSAGE
-          |--------------------------------------------------------------------------
-          */
+        if (sttConnectionPromise) {
+          return sttConnectionPromise;
+        }
 
-          if (isBinary) {
-            const audioBuffer =
-              Buffer.isBuffer(
-                rawMessage,
-              )
-                ? rawMessage
-                : Buffer.from(
-                    rawMessage as ArrayBuffer,
-                  );
-
-
-            console.log(
-              `Received audio chunk: ${audioBuffer.byteLength} bytes`,
-            );
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Only send audio while call is active.
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-              sttConnection &&
-              session?.status ===
-                "active"
-            ) {
-              try {
-                if (
-                  sttConnection
-                    .socket
-                    .readyState ===
-                  sttConnection
-                    .socket
-                    .OPEN
-                ) {
-                  sttConnection.socket.send(
-                    audioBuffer,
-                  );
-                }
-              } catch (
-                error
-              ) {
-                console.error(
-                  "Failed to send audio to Deepgram:",
-                  error,
-                );
-
-                sendMessage(
-                  socket,
-                  {
-                    type:
-                      "ERROR",
-
-                    callId:
-                      session?.callId,
-
-                    message:
-                      "Failed to process audio.",
-                  },
-                );
-              }
-            }
-
-            return;
-          }
-
-
-          /*
-          |--------------------------------------------------------------------------
-          | JSON CONTROL MESSAGE
-          |--------------------------------------------------------------------------
-          */
-
+        sttConnectionPromise = (async () => {
           try {
-            const message =
-              JSON.parse(
-                rawMessage.toString(),
-              ) as ClientMessage;
-
-
-            switch (
-              message.type
-            ) {
-
-              /*
-              |--------------------------------------------------------------------------
-              | START CALL
-              |--------------------------------------------------------------------------
-              */
-
-              case "START_CALL": {
-                if (
-                  session &&
-                  session.status ===
-                    "active"
-                ) {
-                  sendMessage(
-                    socket,
-                    {
-                      type:
-                        "ERROR",
-
-                      callId:
-                        session.callId,
-
-                      message:
-                        "A call is already active.",
-                    },
-                  );
-
-                  break;
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Create new call session
-                |--------------------------------------------------------------------------
-                */
-
-                session =
-                  createCallSession();
-
-                session.status =
-                  "active";
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Reset conversation state
-                |--------------------------------------------------------------------------
-                */
-
-                conversationState =
-                  conversationService
-                    .createInitialState();
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Reset Gemini processing lock
-                |--------------------------------------------------------------------------
-                */
-
-                isProcessingTranscript =
-                  false;
-
-
-                console.log(
-                  `Call started: ${session.callId}`,
-                );
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Create Deepgram connection
-                |--------------------------------------------------------------------------
-                */
-
-                try {
-                  sttConnection =
+                  const connection =
                     await sttService
                       .createLiveConnection();
+
+                  sttConnection =
+                    connection;
 
 
                   console.log(
@@ -392,13 +214,8 @@ export function initializeCallSocket(
                   );
 
 
-                  /*
-                  |--------------------------------------------------------------------------
-                  | Deepgram WebSocket OPEN
-                  |--------------------------------------------------------------------------
-                  */
-
-                  sttConnection.on(
+                  // Deepgram WebSocket OPEN
+                  connection.on(
                     "open",
                     () => {
                       console.log(
@@ -408,13 +225,8 @@ export function initializeCallSocket(
                   );
 
 
-                  /*
-                  |--------------------------------------------------------------------------
-                  | Deepgram MESSAGE
-                  |--------------------------------------------------------------------------
-                  */
-
-                  sttConnection.on(
+                  // Deepgram MESSAGE
+                  connection.on(
                     "message",
                     async (
                       data,
@@ -428,12 +240,7 @@ export function initializeCallSocket(
                         );
 
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Only process Results messages
-                        |--------------------------------------------------------------------------
-                        */
-
+                        // Only process Results messages
                         if (
                           data.type !==
                           "Results"
@@ -454,12 +261,7 @@ export function initializeCallSocket(
                             ?.trim();
 
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Ignore empty transcript
-                        |--------------------------------------------------------------------------
-                        */
-
+                        // Ignore empty transcript
                         if (
                           !transcript
                         ) {
@@ -481,16 +283,7 @@ export function initializeCallSocket(
                         );
 
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Always send transcript to frontend.
-                        |--------------------------------------------------------------------------
-                        |
-                        | Interim transcripts are useful for
-                        | displaying live transcription.
-                        |
-                        */
-
+                        // Always send transcript to frontend.
                         sendMessage(
                           socket,
                           {
@@ -506,28 +299,12 @@ export function initializeCallSocket(
                           },
                         );
 
-
-                        /*
-                        |--------------------------------------------------------------------------
-                        | IMPORTANT:
-                        |
-                        | Only FINAL transcripts go to Gemini.
-                        |--------------------------------------------------------------------------
-                        */
-
-                        if (
-                          !isFinal
-                        ) {
+                        if (!isFinal) {
                           return;
                         }
 
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Ignore empty FINAL transcripts
-                        |--------------------------------------------------------------------------
-                        */
-
+                        // Ignore empty FINAL transcripts
                         if (
                           !transcript
                             .trim()
@@ -536,40 +313,26 @@ export function initializeCallSocket(
                         }
 
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Prevent concurrent Gemini calls
-                        |--------------------------------------------------------------------------
-                        */
-
-                        if (
-                          isProcessingTranscript
-                        ) {
+                        // Only process FINAL transcripts while LISTENING
+                        if (turnState !== "LISTENING") {
                           console.warn(
-                            "Gemini is already processing a transcript. Skipping this transcript.",
+                            `Ignoring FINAL transcript because current turn state is ${turnState}.`,
                           );
 
                           return;
                         }
 
 
-                        isProcessingTranscript =
-                          true;
-
+                        // Move into PROCESSING state
+                        turnState = "PROCESSING";
 
                         console.log(
-                          "\n🎙️ FINAL USER TRANSCRIPT:",
-                          transcript,
+                          "Turn state: LISTENING → PROCESSING",
                         );
 
 
                         try {
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Build health screening prompt
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Build health screening prompt
                           const prompt =
                             buildHealthScreeningPrompt(
                               conversationState,
@@ -578,15 +341,14 @@ export function initializeCallSocket(
 
 
                           console.log(
-                            "🤖 Sending transcript to Gemini...",
+                            "Sending transcript to Gemini...",
                           );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Gemini
-                          |--------------------------------------------------------------------------
-                          */
+                          // Gemini
+                          console.log("Sending transcript to Gemini...");
+
+                          const geminiStart = Date.now();
 
                           const response =
                             await geminiService
@@ -594,19 +356,17 @@ export function initializeCallSocket(
                                 prompt,
                               );
 
+                          console.log(
+                            `Gemini responded in ${Date.now() - geminiStart} ms.`,
+                          );
 
                           console.log(
-                            "🤖 Gemini response:",
+                            "Gemini response:",
                             response.assistantResponse,
                           );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Mark the current topic as answered.
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Mark the current topic as answered.
                           conversationState =
                             conversationService
                               .markTopicAsked(
@@ -615,12 +375,7 @@ export function initializeCallSocket(
                               );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Normalize Gemini state update.
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Normalize Gemini state update.
                           const normalizedUpdate =
                             conversationService
                               .normalizeHealthUpdate(
@@ -630,12 +385,7 @@ export function initializeCallSocket(
                               );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Update health state.
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Update health state.
                           conversationState =
                             conversationService
                               .updateState(
@@ -644,12 +394,7 @@ export function initializeCallSocket(
                               );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Add follow-up flags.
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Add follow-up flags.
                           conversationState =
                             conversationService
                               .addFollowUpFlags(
@@ -658,12 +403,7 @@ export function initializeCallSocket(
                               );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Set next topic.
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Set next topic.
                           conversationState =
                             conversationService
                               .setCurrentTopic(
@@ -672,31 +412,52 @@ export function initializeCallSocket(
                               );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Complete screening
-                          |--------------------------------------------------------------------------
-                          */
+                          // Complete screening
+                          let screeningReport:
+                            | HealthScreeningReport
+                            | null = null;
 
-                          if (
-                            response.isComplete
-                          ) {
+                          if (response.isComplete) {
                             conversationState =
                               conversationService
                                 .completeScreening(
                                   conversationState,
                                 );
+
+                            try {
+                              console.log(
+                                "Generating final health screening summary...",
+                              );
+
+                              const summary =
+                                await geminiService
+                                  .generateHealthScreeningSummary(
+                                    conversationState,
+                                  );
+
+                              screeningReport =
+                                buildHealthScreeningReport(
+                                  conversationState,
+                                  summary,
+                                );
+
+                              console.log(
+                                "Final health screening report generated.",
+                              );
+                            } catch (
+                              reportError
+                            ) {
+                              console.error(
+                                "Failed to generate health screening summary:",
+                                reportError,
+                              );
+                            }
                           }
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Log conversation state
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Log conversation state
                           console.log(
-                            "🧠 Conversation state:",
+                            "Conversation state:",
                             JSON.stringify(
                               conversationState,
                               null,
@@ -705,39 +466,179 @@ export function initializeCallSocket(
                           );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Send AI response to frontend
-                          |--------------------------------------------------------------------------
-                          */
-
+                          // Send AI response text
                           sendMessage(
                             socket,
                             {
-                              type:
-                                "AI_RESPONSE",
-
-                              callId:
-                                session?.callId,
-
-                              response:
-                                response.assistantResponse,
+                              type: "AI_RESPONSE",
+                              callId: session?.callId,
+                              response: response.assistantResponse,
                             },
                           );
+
+                          if (screeningReport) {
+                            sendMessage(
+                              socket,
+                              {
+                                type: "SCREENING_COMPLETE",
+                                callId: session?.callId,
+                                report: screeningReport,
+                              },
+                            );
+
+                            console.log(
+                              "SCREENING_COMPLETE sent to client.",
+                            );
+                          }
+
+
+                          // Generate AI voice
+                          try {
+                            if (session?.status !== "active") {
+                              return;
+                            }
+
+
+                            // Move into AI_SPEAKING state
+
+                            turnState = "AI_SPEAKING";
+
+
+                            console.log(
+                              "Turn state: PROCESSING → AI_SPEAKING",
+                            );
+
+
+                            console.log(
+                              "Generating AI voice response...",
+                            );
+
+                            const audioBuffer =
+                              await ttsService
+                                .generateSpeechWav(
+                                  response.assistantResponse,
+                                );
+
+
+                            // Tell frontend audio is starting
+
+                            sendMessage(
+                              socket,
+                              {
+                                type:
+                                  "AUDIO_START",
+
+                                callId:
+                                  session?.callId,
+                              },
+                            );
+
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Send audio in chunks
+                            |--------------------------------------------------------------------------
+                            |
+                            | We intentionally send multiple binary
+                            | WebSocket frames instead of one giant
+                            | payload.
+                            |
+                            */
+
+                            const chunkSize = 64 * 1024;
+
+
+                            for (
+                              let offset = 0;
+                              offset < audioBuffer.length;
+                              offset += chunkSize
+                            ) {
+                              const chunk =
+                                audioBuffer.subarray(
+                                  offset,
+                                  Math.min(
+                                    offset + chunkSize,
+                                    audioBuffer.length,
+                                  ),
+                                );
+
+
+                              sendAudio(
+                                socket,
+                                chunk,
+                              );
+                            }
+
+
+                            // Tell frontend audio has finished
+
+                            sendMessage(
+                              socket,
+                              {
+                                type:
+                                  "AUDIO_END",
+
+                                callId:
+                                  session?.callId,
+                              },
+                            );
+
+
+                            // AI finished speaking
+
+                            turnState = "LISTENING";
+
+                            console.log(
+                              "Turn state: AI_SPEAKING → LISTENING",
+                            );
+
+
+                            console.log(
+                              "AI voice response sent.",
+                            );
+
+                          } catch (
+                            ttsError
+                          ) {
+                            // TTS failure should NOT kill the call
+
+                            console.error(
+                              "Gemini TTS error:",
+                              ttsError,
+                            );
+
+                            turnState = "LISTENING";
+
+                            console.log(
+                              "Turn state: AI_SPEAKING → LISTENING after TTS failure.",
+                            );
+
+
+
+                            sendMessage(
+                              socket,
+                              {
+                                type:
+                                  "ERROR",
+
+                                callId:
+                                  session?.callId,
+
+                                message:
+                                  "AI voice generation failed. The text response is still available.",
+                              },
+                            );
+                          }
                         } catch (
                           error
                         ) {
                           console.error(
-                            "❌ Gemini screening error:",
+                            "Gemini screening error:",
                             error,
                           );
 
 
-                          /*
-                          |--------------------------------------------------------------------------
-                          | Don't kill the call if Gemini fails.
-                          |--------------------------------------------------------------------------
-                          */
+                          // Don't kill the call if Gemini fails.
 
                           sendMessage(
                             socket,
@@ -752,9 +653,6 @@ export function initializeCallSocket(
                                 "I had trouble processing that. Please try again.",
                             },
                           );
-                        } finally {
-                          isProcessingTranscript =
-                            false;
                         }
                       } catch (
                         error
@@ -768,13 +666,9 @@ export function initializeCallSocket(
                   );
 
 
-                  /*
-                  |--------------------------------------------------------------------------
-                  | Deepgram ERROR
-                  |--------------------------------------------------------------------------
-                  */
+                  // Deepgram ERROR
 
-                  sttConnection.on(
+                  connection.on(
                     "error",
                     (
                       error,
@@ -802,13 +696,9 @@ export function initializeCallSocket(
                   );
 
 
-                  /*
-                  |--------------------------------------------------------------------------
-                  | Deepgram CLOSE
-                  |--------------------------------------------------------------------------
-                  */
+                  // Deepgram CLOSE
 
-                  sttConnection.on(
+                  connection.on(
                     "close",
                     () => {
                       console.log(
@@ -818,37 +708,145 @@ export function initializeCallSocket(
                   );
 
 
-                  /*
-                  |--------------------------------------------------------------------------
-                  | Connect Deepgram
-                  |--------------------------------------------------------------------------
-                  */
+                  // Connect Deepgram
 
-                  sttConnection.connect();
+                  connection.connect();
 
-                  await sttConnection
+                  await connection
                     .waitForOpen();
 
 
                   console.log(
                     "Deepgram STT connection ready.",
                   );
-                } catch (
-                  error
-                ) {
-                  console.error(
-                    "Failed to create Deepgram connection:",
-                    error,
+
+                  return connection;
+          } catch (
+            error
+          ) {
+            console.error(
+              "Failed to create Deepgram connection:",
+              error,
+            );
+
+            sttConnection =
+              null;
+
+            sendMessage(
+              socket,
+              {
+                type:
+                  "ERROR",
+
+                callId:
+                  session?.callId,
+
+                message:
+                  "Unable to start speech recognition.",
+              },
+            );
+
+            throw error;
+          }
+        })();
+
+        try {
+          return await sttConnectionPromise;
+        } finally {
+          sttConnectionPromise =
+            null;
+        }
+      };
+
+
+      // WebSocket Messages
+
+      socket.on(
+        "message",
+        async (
+          rawMessage,
+          isBinary,
+        ) => {
+
+          // BINARY AUDIO MESSAGE
+
+          if (isBinary) {
+            const audioBuffer =
+              Buffer.isBuffer(
+                rawMessage,
+              )
+                ? rawMessage
+                : Buffer.from(
+                    rawMessage as ArrayBuffer,
                   );
 
 
-                  session.status =
-                    "ended";
-
-                  sttConnection =
-                    null;
+            console.log(
+              `Received audio chunk: ${audioBuffer.byteLength} bytes`,
+            );
 
 
+            // Only send audio while call is active AND the conversation is listening.
+
+            if (
+              session?.status ===
+                "active" &&
+              turnState ===
+                "LISTENING"
+            ) {
+              try {
+                const connection =
+                  await ensureSttConnection();
+
+                // The turn may have changed while Deepgram was connecting.
+                // Do not forward stale audio into another turn.
+                if (
+                  session?.status ===
+                    "active" &&
+                  turnState ===
+                    "LISTENING" &&
+                  connection.socket.readyState ===
+                    connection.socket.OPEN
+                ) {
+                  connection.socket.send(
+                    audioBuffer,
+                  );
+                }
+              } catch (
+                error
+              ) {
+                console.error(
+                  "Failed to send audio to Deepgram:",
+                  error,
+                );
+              }
+            }
+
+            return;
+          }
+
+
+          // JSON CONTROL MESSAGE
+
+          try {
+            const message =
+              JSON.parse(
+                rawMessage.toString(),
+              ) as ClientMessage;
+
+
+            switch (
+              message.type
+            ) {
+
+              // START CALL
+
+              case "START_CALL": {
+                if (
+                  session &&
+                  session.status ===
+                    "active"
+                ) {
                   sendMessage(
                     socket,
                     {
@@ -859,20 +857,46 @@ export function initializeCallSocket(
                         session.callId,
 
                       message:
-                        "Unable to start speech recognition.",
+                        "A call is already active.",
                     },
                   );
-
 
                   break;
                 }
 
 
-                /*
-                |--------------------------------------------------------------------------
-                | Notify frontend that call has started
-                |--------------------------------------------------------------------------
-                */
+                // Create new call session
+
+                session =
+                  createCallSession();
+
+                session.status =
+                  "active";
+
+
+                // Reset conversation state
+
+                conversationState =
+                  conversationService
+                    .createInitialState();
+
+
+                // Reset conversation turn state
+
+                turnState = "LISTENING";
+
+
+                console.log(
+                  `Call started: ${session.callId}`,
+                );
+
+
+                // Deepgram is created lazily when the first microphone
+                // audio chunk arrives. The frontend starts recording only
+                // after the AI greeting finishes.
+
+
+                // Notify frontend that call has started
 
                 sendMessage(
                   socket,
@@ -889,15 +913,11 @@ export function initializeCallSocket(
                 );
 
 
-                /*
-                |--------------------------------------------------------------------------
-                | Initial AI greeting
-                |--------------------------------------------------------------------------
-                |
-                | For Phase 6.4.1 we send this as text.
-                | TTS will be added later.
-                |
-                */
+                // Initial AI greeting
+
+                const initialGreeting = "Hello! Welcome to the health screening. Could you please tell me your name?";
+
+                // Send greeting text
 
                 sendMessage(
                   socket,
@@ -909,20 +929,94 @@ export function initializeCallSocket(
                       session.callId,
 
                     response:
-                      "Hello! Welcome to the health screening. Could you please tell me your name?",
+                      initialGreeting,
                   },
                 );
 
+
+                // Generate greeting audio
+
+                try {
+                  console.log(
+                    "Generating initial AI greeting audio...",
+                  );
+
+
+                  const audioBuffer =
+                    await ttsService
+                      .generateSpeechWav(
+                        initialGreeting,
+                      );
+
+
+                  sendMessage(
+                    socket,
+                    {
+                      type:
+                        "AUDIO_START",
+
+                      callId:
+                        session.callId,
+                    },
+                  );
+
+
+                  const chunkSize =
+                    64 * 1024;
+
+
+                  for (
+                    let offset = 0;
+                    offset < audioBuffer.length;
+                    offset += chunkSize
+                  ) {
+                    const chunk =
+                      audioBuffer.subarray(
+                        offset,
+                        Math.min(
+                          offset + chunkSize,
+                          audioBuffer.length,
+                        ),
+                      );
+
+
+                    sendAudio(
+                      socket,
+                      chunk,
+                    );
+                  }
+
+
+                  sendMessage(
+                    socket,
+                    {
+                      type:
+                        "AUDIO_END",
+
+                      callId:
+                        session.callId,
+                    },
+                  );
+
+
+                  console.log(
+                    "Initial AI greeting audio sent.",
+                  );
+
+                } catch (
+                  ttsError
+                ) {
+                  console.error(
+                    "Initial greeting TTS error:",
+                    ttsError,
+                  );
+                }
 
                 break;
               }
 
 
-              /*
-              |--------------------------------------------------------------------------
-              | END CALL
-              |--------------------------------------------------------------------------
-              */
+              // END CALL
 
               case "END_CALL": {
                 if (
@@ -943,20 +1037,16 @@ export function initializeCallSocket(
                 }
 
 
-                session.status =
-                  "ended";
+                session.status = "ended";
 
+                turnState = "LISTENING";
 
                 console.log(
                   `Call ended: ${session.callId}`,
                 );
 
 
-                /*
-                |--------------------------------------------------------------------------
-                | Close Deepgram
-                |--------------------------------------------------------------------------
-                */
+                // Close Deepgram
 
                 if (
                   sttConnection
@@ -980,11 +1070,7 @@ export function initializeCallSocket(
                 }
 
 
-                /*
-                |--------------------------------------------------------------------------
-                | Send CALL_ENDED
-                |--------------------------------------------------------------------------
-                */
+                // Send CALL_ENDED
 
                 sendMessage(
                   socket,
@@ -1005,11 +1091,7 @@ export function initializeCallSocket(
               }
 
 
-              /*
-              |--------------------------------------------------------------------------
-              | PING
-              |--------------------------------------------------------------------------
-              */
+              // PING
 
               case "PING": {
                 sendMessage(
@@ -1024,11 +1106,7 @@ export function initializeCallSocket(
               }
 
 
-              /*
-              |--------------------------------------------------------------------------
-              | AUDIO_CHUNK as JSON
-              |--------------------------------------------------------------------------
-              */
+              // AUDIO_CHUNK as JSON
 
               case "AUDIO_CHUNK": {
                 console.warn(
@@ -1039,11 +1117,7 @@ export function initializeCallSocket(
               }
 
 
-              /*
-              |--------------------------------------------------------------------------
-              | UNKNOWN MESSAGE
-              |--------------------------------------------------------------------------
-              */
+              // UNKNOWN MESSAGE
 
               default: {
                 sendMessage(
@@ -1088,11 +1162,7 @@ export function initializeCallSocket(
       );
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | CLIENT DISCONNECT
-      |--------------------------------------------------------------------------
-      */
+      // CLIENT DISCONNECT
 
       socket.on(
         "close",
@@ -1141,11 +1211,7 @@ export function initializeCallSocket(
       );
 
 
-      /*
-      |--------------------------------------------------------------------------
-      | WEBSOCKET ERROR
-      |--------------------------------------------------------------------------
-      */
+      // WEBSOCKET ERROR
 
       socket.on(
         "error",
@@ -1184,11 +1250,7 @@ export function initializeCallSocket(
   );
 
 
-  /*
-  |--------------------------------------------------------------------------
-  | Server Ready
-  |--------------------------------------------------------------------------
-  */
+  // Server Ready
 
   console.log(
     "WebSocket server initialized at /ws/call",

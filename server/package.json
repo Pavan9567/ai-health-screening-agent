@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "test:gemini": "tsx src/scripts/testGemini.ts",
     "test:conversation": "tsx src/scripts/testConversation.ts",
-    "test:screening": "tsx src/scripts/testScreening.ts"
+    "test:screening": "tsx src/scripts/testScreening.ts",
+    "test:tts": "tsx src/scripts/testTts.ts"
   },
   "keywords": [],
   "author": "",

@@ -1,51 +1,115 @@
-import { useCallback, useEffect, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+} from "react";
+
 import {
   CallWebSocket,
   type WebSocketEventHandlers,
 } from "../services/websocket";
-import type { ClientMessage } from "../types/websocket";
+
+import type {
+  ClientMessage,
+} from "../types/websocket";
+
 
 export function useWebSocket() {
-  const clientRef = useRef<CallWebSocket | null>(null);
+  const clientRef =
+    useRef<
+      CallWebSocket | null
+    >(null);
+
 
   useEffect(() => {
     return () => {
-      clientRef.current?.disconnect();
+      clientRef.current
+        ?.disconnect();
     };
   }, []);
 
-  const connect = useCallback(
-    (
-      url: string,
-      handlers: WebSocketEventHandlers,
-    ) => {
-      const client = new CallWebSocket();
 
-      clientRef.current = client;
+  /*
+  |--------------------------------------------------------------------------
+  | Connect
+  |--------------------------------------------------------------------------
+  */
 
-      client.connect(url, handlers);
-    },
-    [],
-  );
+  const connect =
+    useCallback(
+      (
+        url: string,
+        handlers:
+          WebSocketEventHandlers,
+      ) => {
+        const client =
+          new CallWebSocket();
 
-  const send = useCallback(
-    (message: ClientMessage) => {
-      clientRef.current?.send(message);
-    },
-    [],
-  );
 
-  const sendAudio = useCallback(
-    (chunk: Blob) => {
-        clientRef.current?.sendAudio(chunk);
-    },
-    [],
-  );
+        clientRef.current =
+          client;
 
-  const disconnect = useCallback(() => {
-    clientRef.current?.disconnect();
-    clientRef.current = null;
-  }, []);
+
+        client.connect(
+          url,
+          handlers,
+        );
+      },
+      [],
+    );
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Send JSON
+  |--------------------------------------------------------------------------
+  */
+
+  const send =
+    useCallback(
+      (
+        message: ClientMessage,
+      ) => {
+        clientRef.current
+          ?.send(message);
+      },
+      [],
+    );
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Send microphone audio
+  |--------------------------------------------------------------------------
+  */
+
+  const sendAudio =
+    useCallback(
+      (
+        chunk: Blob,
+      ) => {
+        clientRef.current
+          ?.sendAudio(chunk);
+      },
+      [],
+    );
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Disconnect
+  |--------------------------------------------------------------------------
+  */
+
+  const disconnect =
+    useCallback(() => {
+      clientRef.current
+        ?.disconnect();
+
+      clientRef.current =
+        null;
+    }, []);
+
 
   return {
     connect,

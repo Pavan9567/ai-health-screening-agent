@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type, } from "@google/genai";
 import { env } from "../config/env.js";
-import type { ScreeningAgentResponse, ScreeningTopic, } from "../models/healthScreening.js";
+import type { ConversationState, ScreeningAgentResponse, ScreeningTopic, } from "../models/healthScreening.js";
 
 const MAX_GEMINI_RETRIES = 3;
 const GEMINI_RETRY_DELAYS = [1000, 2000, 4000,];
@@ -178,6 +178,56 @@ export class GeminiLlmService {
     );
   }
 
+  async generateHealthScreeningSummary(
+    state: ConversationState,
+  ): Promise<string> {
+    const prompt = `
+  You are generating a concise summary of a health screening conversation.
+
+  Use ONLY the information provided in the screening state below.
+
+  Do not:
+  - diagnose any medical condition
+  - recommend treatment
+  - invent symptoms
+  - invent duration or severity
+  - infer medical facts that were not collected
+  - add information that is not present in the state
+
+  Summarize the information collected during the screening in a clear,
+  neutral and concise manner.
+
+  If some information is missing, do not invent it.
+
+  Screening state:
+  ${JSON.stringify(state.health, null, 2)}
+
+  Screening completed:
+  ${state.isComplete}
+
+  Return ONLY the summary text.
+  `;
+
+    const response =
+      await this.generateWithRetry(
+        () =>
+          this.client.models.generateContent({
+            model: "gemini-3.6-flash",
+            contents: prompt,
+          }),
+      );
+
+    const summary = response.text?.trim();
+
+    if (!summary) {
+      throw new Error(
+        "Gemini returned an empty health screening summary.",
+      );
+    }
+
+    return summary;
+  }
+
   private async generateWithRetry<T>(
     operation: () => Promise<T>,
   ): Promise<T> {
@@ -318,7 +368,6 @@ function validateScreeningResponse(
 
   return value as ScreeningAgentResponse;
 }
-
 
 function sleep(
   milliseconds: number,
